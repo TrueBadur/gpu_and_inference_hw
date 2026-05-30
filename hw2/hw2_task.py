@@ -1,4 +1,5 @@
 import torch
+from torch.profiler import profile as torch_profile, record_function, ProfilerActivity
 from utils import (
     build_model,
     get_input_ids,
@@ -11,30 +12,57 @@ from utils import (
 
 
 def optimized_loop(model, input_ids, n_steps):
-    # TODO: fix the performance issues you found — changes may include
-    # both `optimized_loop` and `generate_optimized`
+    # Optimization 1: Use KV cache by storing past_key_values between iterations
+    # Optimization 2: Only pass the last generated token after first iteration
     generated_ids = input_ids.clone()
     generated_tokens = []
-    for _ in range(n_steps):
-        outputs = model(input_ids=generated_ids)
+    past_key_values = None
+
+    for step in range(n_steps):
+        if step == 0:
+            # First step: pass full context to get initial past_key_values
+            outputs = model(input_ids=generated_ids, use_cache=True)
+        else:
+            # Subsequent steps: only pass the last token, reuse KV cache
+            outputs = model(input_ids=generated_ids[:, -1:], past_key_values=past_key_values, use_cache=True)
+
+        past_key_values = outputs.past_key_values
         next_token_id = torch.argmax(outputs.logits[:, -1, :], dim=-1)
         token_value = next_token_id.item()
         generated_tokens.append(token_value)
         generated_ids = torch.cat([generated_ids, next_token_id.unsqueeze(0)], dim=1)
+
     return generated_tokens
 
 
 def profile(loop_fn, model, input_ids, trace_name: str):
-    # TODO: wrap loop_fn(model, input_ids, PROFILE_STEPS) with torch.profiler,
-    # print the summary table, and export a Chrome trace to RESULTS_DIR / trace_name
-    pass
+    # Wrap loop_fn with torch.profiler, print the summary table, and export a Chrome trace
+    with torch_profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            on_trace_ready=lambda p: p.export_chrome_trace(str(RESULTS_DIR / trace_name))
+    ) as prof:
+        with record_function("generation_loop"):
+            loop_fn(model, input_ids, PROFILE_STEPS)
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
 
 
 def generate_optimized(optimized_trace_name: str) -> float:
-    # TODO: load the model (consider dtype and other loading options),
-    # then call profile() and time_generation() on optimized_loop.
-    # Return the elapsed time from time_generation so main() can print a speedup.
-    pass
+    # Load model with mixed precision (float16) for faster inference
+    model = build_model(torch.float16)
+    input_ids = get_input_ids()
+
+    # Profile the optimized loop
+    profile(optimized_loop, model, input_ids, optimized_trace_name)
+
+    # Time the generation with MAX_NEW_TOKENS
+    elapsed = time_generation(optimized_loop, model, input_ids, "Optimized")
+
+    del model
+    torch.cuda.empty_cache()
+
+    return elapsed
 
 
 def main():
@@ -52,7 +80,7 @@ def main():
     torch.cuda.empty_cache()
 
     print("\n--- Part 2: Optimized ---")
-    optimized_elapsed = generate_optimized(optimized_trace_name="v1_optimized_trace.json")
+    optimized_elapsed = generate_optimized(optimized_trace_name="v3_optimized_kv_cache_and_fp16.json")
 
     print("\n" + "=" * 60)
     print("SUMMARY")
