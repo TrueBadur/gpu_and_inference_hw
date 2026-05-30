@@ -12,8 +12,7 @@ import torch
 
 def lowest_ai_fn(x: torch.Tensor) -> torch.Tensor:
     """Lowest arithmetic intensity baseline (0 FLOP/Byte)."""
-    # TODO (1 line): implement a lowest-AI op
-    pass
+    return x.clone()
 
 
 # TASK 1b: Implement a function with configurable arithmetic intensity.
@@ -37,10 +36,12 @@ def make_compute_fn(num_ops: int, compiled: bool = True):
     """Return an eager or compiled function whose work scales with num_ops."""
 
     def fn(x: torch.Tensor) -> torch.Tensor:
-        pass
+        acc = x.clone()
+        for _ in range(num_ops):
+            acc = acc * x + x
+        return acc
 
-    # TODO (1 line): return either `fn` or `torch.compile(fn)` based on `compiled`
-    pass
+    return torch.compile(fn) if compiled else fn
 
 
 # ============================================================================
@@ -62,8 +63,21 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
         fn(*args)
     torch.cuda.synchronize()
 
-    # TODO: time `rep` runs using CUDA events and return median latency (ms)
-    pass
+    time_ms = []
+    for _ in range(rep):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        fn(*args)
+        end.record()
+        torch.cuda.synchronize()
+        time_ms.append(start.elapsed_time(end))
+    time_ms.sort()
+    mid = len(time_ms) // 2
+    if len(time_ms) % 2 == 1:
+        return time_ms[mid]
+    else:
+        return (time_ms[mid - 1] + time_ms[mid]) / 2
 
 
 # TASK 3: Compute element-wise operation metrics from measured runtime.
@@ -84,7 +98,28 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
 
 def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, variant):
     # TODO: compute total FLOPs, arithmetic intensity, and achieved FLOP/s
-    pass
+    total_flops = float(num_elements) * float(num_ops) * 2.0
+    # for "compiled" variant we assume that the whole cycle is fused in one kernel, so each element is read once and written once at the kernel boundary
+    # for "eager" variant we estimate the following:
+    #     mul:  read(acc) + read(x) -> 2 reads, write(tmp) -> 1 write
+    #     add:  read(tmp) + read(x) -> 2 reads, write(acc) -> 1 write
+    # Resulting in 6 * bytes_per_element
+    if variant == "compiled":
+        traffic_bytes = float(num_elements) * float(num_ops) * float(bytes_per_element) * 2.0
+    else:
+        traffic_bytes = float(num_elements) * float(num_ops) * float(bytes_per_element) * 6.0
+
+    if traffic_bytes <= 0.0:
+        ai = float("inf")
+    else:
+        ai = float(total_flops) / float(traffic_bytes)
+
+    seconds = float(ms) / 1000.0
+    if seconds <= 0.0:
+        achieved_flops = float("inf")
+    else:
+        achieved_flops = float(total_flops) / float(seconds)
+
     return total_flops, ai, achieved_flops
 
 
