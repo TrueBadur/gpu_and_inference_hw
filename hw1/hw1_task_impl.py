@@ -139,12 +139,31 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
 #
+# A1. The top performance GPU reaches when it performs computations on "same" data in
+# fast memory. The more ops fused in one kernel, the more GPU can work on the data
+# before it is moved to a slower memory. Basically GPU can perform more operations
+# in unit of time but there is no more work to do. It's like a truck which can move 100 boxes per race.
+# It will take the same amount of time to deliver 1, 50 or 100 boxes.
+#
 # Q2. In one sample run, `matmul 1024x1024` achieved lower FLOP/s than the
 # `128 ops` compiled element-wise operation. Give one or two reasons why that can
 # happen on a large GPU like an H100.
+#
+# A2. 1. The overhead of the fixed additional work made by the pipeline, like
+# host-to-device launch latency and grid synchronization dominate the runtime.
+# 2. 1024x1024 matrix multiply operation is not filling the whole H100 card capacity
+# underutilizing its top performance, while the data used in the 128 ops compiled element-wise kernel (64 x 1024 x 1024) is.
 #
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
 # becoming the bottleneck?
 #
+# A3. The bottleneck is now top possible performance of the GPU. The GPU can't work faster.
+# Continuing the car example from Q1, now the number of boxes is 150. The truck must have 2 races to deliver them.
+# So the amount of time it spends in the way grows.
+#
 # Q4. Why do the eager `ops-K` points look so different from the compiled ones?
+#
+# A4. With eager execution each operation is run separately, so the data has to be retrieved from and written
+# back to slow global memory (HBM) for each operation, which causes a huge traffic and makes GPU spend most of the
+# time waiting for data.
