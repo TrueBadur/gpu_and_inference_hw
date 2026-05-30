@@ -97,16 +97,23 @@ def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
 
 
 def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, variant):
-    # TODO: compute total FLOPs, arithmetic intensity, and achieved FLOP/s
+    # Compute total FLOPs, arithmetic intensity, and achieved FLOP/s
+    # Each iteration of `acc = acc * x + x` does 2 FLOPs per element
     total_flops = float(num_elements) * float(num_ops) * 2.0
-    # for "compiled" variant we assume that the whole cycle is fused in one kernel, so each element is read once and written once at the kernel boundary
-    # for "eager" variant we estimate the following:
-    #     mul:  read(acc) + read(x) -> 2 reads, write(tmp) -> 1 write
-    #     add:  read(tmp) + read(x) -> 2 reads, write(acc) -> 1 write
-    # Resulting in 6 * bytes_per_element
+
+    # For "compiled" variant: the whole loop is fused in one kernel, so each element
+    # is read once and written once at the kernel boundary, regardless of num_ops.
+    # Traffic = num_elements * (read + write) * bytes_per_element
+    #
+    # For "eager" variant: each iteration launches separate mul and add kernels:
+    #   mul:  read(acc) + read(x) -> write(tmp)
+    #   add:  read(tmp) + read(x) -> write(acc)
+    # Traffic per iteration ≈ 6 * bytes_per_element per element (4 reads + 2 writes)
     if variant == "compiled":
-        traffic_bytes = float(num_elements) * float(num_ops) * float(bytes_per_element) * 2.0
+        # Fused: read + write per element, once
+        traffic_bytes = float(num_elements) * float(bytes_per_element) * 2.0
     else:
+        # Eager: 6 accesses per iteration per element
         traffic_bytes = float(num_elements) * float(num_ops) * float(bytes_per_element) * 6.0
 
     if traffic_bytes <= 0.0:
